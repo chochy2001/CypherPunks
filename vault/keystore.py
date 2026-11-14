@@ -21,7 +21,7 @@ from vault.keys import key_id
 KEYSTORE_FORMAT = "SDV-KEYSTORE-1"
 KDF_PARAMETERS = {"algorithm": "scrypt", "n": 2**17, "r": 8, "p": 1, "length": 32}
 SALT_SIZE_BYTES = 16
-
+MIN_PASSWORD_LENGTH = 12
 
 def derive_key(password: bytes, salt: bytes) -> bytes:
     """Password + salt -> 256-bit key. scrypt is slow and memory-hard on purpose."""
@@ -36,6 +36,11 @@ def derive_key(password: bytes, salt: bytes) -> bytes:
 
 def save_keystore(private_key, usage: str, path: str | Path, password: bytes) -> None:
     """Encrypt the private key with a password-derived key and write the keystore."""
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise KeyManagementError(
+            f"The password must have at least {MIN_PASSWORD_LENGTH} characters"
+        )
+    
     salt = os.urandom(SALT_SIZE_BYTES)
     store = {
         "format": KEYSTORE_FORMAT,
