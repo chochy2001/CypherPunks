@@ -119,12 +119,12 @@ def backup_keystore(path: str | Path, backup_dir: str | Path) -> Path:
 
     return target
 
-def restore_keystore(backup_path: str | Path, path: str | Path) -> None:
-    """Put a backup back where the keystore belongs. An existing keystore is never overwritten."""
+def restore_keystore(backup_path: str | Path, path: str | Path, password: bytes, usage: str) -> None:
+    """Restore a backup only if it unlocks with the password: a modified or foreign file is refused."""
     target = Path(path)
-
     if target.exists():
         raise KeyManagementError(f"Keystore already exists: {target}")
+    load_keystore(backup_path, password, usage)
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
