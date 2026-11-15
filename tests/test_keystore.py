@@ -32,3 +32,9 @@ def test_correct_password_grants_access(bob_keystore, bob, shared):
     unlocked = keystore.load_keystore(bob_keystore, PASSWORD, "wrap")
     assert keys.key_id(unlocked.public_key()) == keys.key_id(bob.public_key())
     assert hybrid.decrypt_as_recipient(shared, unlocked) == PLAINTEXT
+
+
+# Required test 2
+def test_wrong_password_denied(bob_keystore):
+    with pytest.raises(KeyManagementError):
+        keystore.load_keystore(bob_keystore, b"correct horse battery stapler", "wrap")
