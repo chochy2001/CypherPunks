@@ -8,6 +8,7 @@ change to it makes the keystore fail to open.
 import base64
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -101,6 +102,22 @@ def load_keystore(path: str | Path, password: bytes, usage: str) -> PrivateKey:
         raise KeyManagementError("The key does not match the key ID in the keystore")
     return private_key
 
+
+def backup_keystore(path: str | Path, backup_dir: str | Path) -> Path:
+    """Copy the keystore as it is: the backup stays encrypted, so no password is needed."""
+    source = Path(path)
+    target = Path(backup_dir) / source.name
+
+    if target.exists():
+        raise KeyManagementError(f"Backup already exists: {target}")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    except OSError as exc:
+        raise KeyManagementError(f"Could not back up {source}") from exc
+
+    return target
 
 
 def _aad(store: dict) -> bytes:
