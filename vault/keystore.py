@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from vault import crypto_core
@@ -24,6 +25,10 @@ KDF_PARAMETERS = {"algorithm": "scrypt", "n": 2**17, "r": 8, "p": 1, "length": 3
 SALT_SIZE_BYTES = 16
 MIN_PASSWORD_LENGTH = 12
 
+# One keystore holds one key with one job: RSA unwraps file keys, Ed25519 signs.
+KEY_TYPES = {"wrap": rsa.RSAPrivateKey, "sign": ed25519.Ed25519PrivateKey}
+PrivateKey = rsa.RSAPrivateKey | ed25519.Ed25519PrivateKey
+
 def derive_key(password: bytes, salt: bytes) -> bytes:
     """Password + salt -> 256-bit key. scrypt is slow and memory-hard on purpose."""
     return Scrypt(
@@ -35,12 +40,17 @@ def derive_key(password: bytes, salt: bytes) -> bytes:
     ).derive(password)
 
 
-def save_keystore(private_key, usage: str, path: str | Path, password: bytes) -> None:
+def save_keystore(private_key: PrivateKey, usage: str, path: str | Path, password: bytes) -> None:
     """Encrypt the private key with a password-derived key and write the keystore."""
     if len(password) < MIN_PASSWORD_LENGTH:
         raise KeyManagementError(
             f"The password must have at least {MIN_PASSWORD_LENGTH} characters"
         )
+
+    
+    if not isinstance(private_key, KEY_TYPES.get(usage, ())):
+        raise KeyManagementError(f"Not a valid key for usage '{usage}'")
+
     
     salt = os.urandom(SALT_SIZE_BYTES)
     store = {
@@ -69,7 +79,7 @@ def save_keystore(private_key, usage: str, path: str | Path, password: bytes) ->
         json.dump(store, fh, indent=2)
 
 
-def load_keystore(path: str | Path, password: bytes):
+def load_keystore(path: str | Path, password: bytes, usage: str) -> PrivateKey:
     """Derive the key from the password and decrypt the private key, only in memory."""
     try:
         store = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -83,7 +93,14 @@ def load_keystore(path: str | Path, password: bytes):
         raise KeyManagementError("Could not unlock the keystore (wrong password or modified file)") from None
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise KeyManagementError(f"Not a valid keystore: {path}") from exc
-    return serialization.load_der_private_key(der, password=None)
+    private_key = serialization.load_der_private_key(der, password=None)
+    metadata = store["metadata"]
+    if metadata["usage"] != usage or not isinstance(private_key, KEY_TYPES[usage]):
+        raise KeyManagementError(f"This keystore does not hold a '{usage}' key")
+    if metadata["key_id"] != key_id(private_key.public_key()):
+        raise KeyManagementError("The key does not match the key ID in the keystore")
+    return private_key
+
 
 
 def _aad(store: dict) -> bytes:
