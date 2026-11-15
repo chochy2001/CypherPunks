@@ -92,10 +92,25 @@ def _cmd_open(args) -> None:
     file_vault._atomic_write(out, hybrid.verify_and_decrypt(data, private_key, sender_key))
     print(f"Decrypted -> {out}")
 
+
+def _cmd_backup(args) -> None:
+    for path in args.input:
+        print(f"Backup -> {keystore.backup_keystore(path, args.dir)}")
+
+
+def _cmd_restore(args) -> None:
+    name = os.path.basename(args.input)
+    usage = "sign" if name.endswith(".sign.key.json") else "wrap"
+    target = os.path.join(args.dir, name)
+    keystore.restore_keystore(args.input, target, _ask_passphrase(), usage)
+    print(f"Restored -> {target}")
+
+
 def _cmd_recipients(args) -> None:
     """Display the key IDs of authorized recipients."""
     for kid in hybrid.list_recipients(_read_input(args.input)):
         print(kid)
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vault", description="Secure Digital Document Vault (D2-D5)")
@@ -139,6 +154,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="list the key IDs that can open a container (D3)"
     )
     rc.add_argument("input")
+    
+    bk = sub.add_parser("backup", help="copy encrypted keystores to a backup folder (D6)")
+    bk.add_argument("input", nargs="+", metavar="KEYSTORE")
+    bk.add_argument("-d", "--dir", default="backups", help="backup folder (default: backups)")
+    rs = sub.add_parser("restore", help="restore a keystore from a backup, after checking its password (D6)")
+    rs.add_argument("input", metavar="BACKUP")
+    rs.add_argument("-d", "--dir", default="keystore", help="keystore folder (default: keystore)")
+    
     return parser
 
 
@@ -162,6 +185,10 @@ def main(argv: list[str] | None = None) -> int:
             _cmd_share(args)
         elif args.command == "open":
             _cmd_open(args)
+        elif args.command == "backup":
+            _cmd_backup(args)
+        elif args.command == "restore":
+            _cmd_restore(args)
         else:
             _cmd_recipients(args)
         return 0
