@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from vault import cli, container_v2, crypto_core, hybrid, keys, keywrap
+from vault import cli, container_v2, crypto_core, hybrid, keys, keystore, keywrap
 from vault.exceptions import IntegrityError, KeyManagementError, VaultError
 
 PLAINTEXT = b"%PDF-1.7\n" + b"contenido confidencial " * 2000
@@ -34,17 +34,17 @@ def test_key_id_is_deterministic(alice):
     assert len(keys.key_id(alice.public_key())) == 64
 
 
-def test_private_key_roundtrip_with_passphrase(tmp_path, alice):
-    # Save and reload a private key using a password.
-    path = tmp_path / "alice.key.pem"
-    keys.save_private_key(alice, path, b"correct horse")
-    loaded = keys.load_private_key(path, b"correct horse")
+def test_private_key_roundtrip_with_password(tmp_path, alice):
+    # Save and reload a private key through the keystore (D6).
+    path = tmp_path / "alice.key.json"
+    keystore.save_keystore(alice, "wrap", path, b"correct horse battery")
+    loaded = keystore.load_keystore(path, b"correct horse battery", "wrap")
 
     assert keys.key_id(loaded.public_key()) == keys.key_id(alice.public_key())
 
     # A wrong password must be rejected.
     with pytest.raises(KeyManagementError):
-        keys.load_private_key(path, b"wrong")
+        keystore.load_keystore(path, b"wrong password", "wrap")
 
 
 def test_weak_rsa_key_rejected():
