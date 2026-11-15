@@ -15,7 +15,8 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from vault import crypto_core
-from vault.exceptions import KeyManagementError
+from vault.exceptions import IntegrityError, KeyManagementError
+
 from vault.keys import key_id
 
 KEYSTORE_FORMAT = "SDV-KEYSTORE-1"
@@ -66,6 +67,23 @@ def save_keystore(private_key, usage: str, path: str | Path, password: bytes) ->
         raise KeyManagementError(f"Keystore already exists: {path}") from None
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(store, fh, indent=2)
+
+
+def load_keystore(path: str | Path, password: bytes):
+    """Derive the key from the password and decrypt the private key, only in memory."""
+    try:
+        store = json.loads(Path(path).read_text(encoding="utf-8"))
+        der = crypto_core.decrypt(
+            derive_key(password, _b64d(store["salt"])),
+            _b64d(store["nonce"]),
+            _b64d(store["encrypted_private_key"]),
+            _aad(store),
+        )
+    except IntegrityError:
+        raise KeyManagementError("Could not unlock the keystore (wrong password or modified file)") from None
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise KeyManagementError(f"Not a valid keystore: {path}") from exc
+    return serialization.load_der_private_key(der, password=None)
 
 
 def _aad(store: dict) -> bytes:
