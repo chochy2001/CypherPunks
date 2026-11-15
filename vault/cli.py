@@ -20,7 +20,7 @@ import getpass
 import os
 import sys
 
-from vault import file_vault, hybrid, keys
+from vault import file_vault, hybrid, keys, keystore
 from vault.exceptions import ContainerFormatError, IntegrityError, VaultError
 
 
@@ -54,20 +54,21 @@ def _ask_passphrase(confirm: bool = False) -> bytes:
     return passphrase.encode("utf-8")
 
 
+
 def _cmd_keygen(args) -> None:
     os.makedirs(args.dir, exist_ok=True)
-    private_path = os.path.join(args.dir, f"{args.name}.key.pem")
+    private_path = os.path.join(args.dir, f"{args.name}.key.json")
     public_path = os.path.join(args.dir, f"{args.name}.pub.pem")
     if os.path.exists(private_path):
         raise VaultError(f"Key already exists: {private_path}")
     private_key = keys.generate_keypair()
     passphrase = _ask_passphrase(confirm=True)
-    keys.save_private_key(private_key, private_path, passphrase)
+    keystore.save_keystore(private_key, "wrap", private_path, passphrase)
     keys.save_public_key(private_key.public_key(), public_path)
     signing_key = keys.generate_signing_keypair()
-    keys.save_private_key(signing_key, os.path.join(args.dir, f"{args.name}.sign.key.pem"), passphrase)
+    keystore.save_keystore(signing_key, "sign", os.path.join(args.dir, f"{args.name}.sign.key.json"), passphrase)
     keys.save_public_key(signing_key.public_key(), os.path.join(args.dir, f"{args.name}.sign.pub.pem"))
-    print(f"Private key -> {private_path}  (never share it)")
+    print(f"Keystore -> {private_path} (encrypted; never share it)")
     print(f"Public key  -> {public_path}")
     print(f"Key ID      -> {keys.key_id(private_key.public_key())}")
 
@@ -75,8 +76,8 @@ def _cmd_keygen(args) -> None:
 def _cmd_share(args) -> None:
     plaintext = _read_input(args.input)
     public_keys = [keys.load_public_key(path) for path in args.recipient]
-    out = args.output or args.input + ".sdv"    
-    signing_key = keys.load_signing_private_key(args.sign_key, _ask_passphrase())
+    out = args.output or args.input + ".sdv"       
+    signing_key = keystore.load_keystore(args.sign_key, _ask_passphrase(), "sign")
     file_vault._atomic_write(out, hybrid.encrypt_and_sign(plaintext, public_keys, signing_key))
     print(f"Encrypted for {len(public_keys)} recipient(s) -> {out}")
 
@@ -86,7 +87,7 @@ def _cmd_open(args) -> None:
     out = args.output or (args.input[:-4] if args.input.endswith(".sdv") else args.input + ".out")
     if os.path.exists(out) and not args.force:
         raise VaultError(f"Output file already exists: {out}")
-    private_key = keys.load_private_key(args.identity, _ask_passphrase())
+    private_key = keystore.load_keystore(args.identity, _ask_passphrase(), "wrap")
     sender_key = keys.load_signing_public_key(args.sender)
     file_vault._atomic_write(out, hybrid.verify_and_decrypt(data, private_key, sender_key))
     print(f"Decrypted -> {out}")
@@ -112,8 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     dec.add_argument("-f", "--force", action="store_true",
                      help="overwrite the output file if it already exists")
     kg = sub.add_parser("keygen", help="create RSA (sharing) and Ed25519 (signing) key pairs")
-    kg.add_argument("name", help="writes <name>.key.pem, <name>.pub.pem, <name>.sign.key.pem, <name>.sign.pub.pem")
-    kg.add_argument("-d", "--dir", default=".", help="output folder (default: current folder)")
+    kg.add_argument("name", help="writes <name>.key.pem, <name>.pub.pem, <name>.sign.key.pem, <name>.sign.pub.pem") 
+    kg.add_argument("-d", "--dir", default="keystore", help="output folder (default: keystore)")
     sh = sub.add_parser("share", help="encrypt a file for one or more recipients (D3)")
     sh.add_argument("input")
     sh.add_argument("-r", "--recipient", action="append", required=True,
