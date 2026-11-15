@@ -119,6 +119,19 @@ def backup_keystore(path: str | Path, backup_dir: str | Path) -> Path:
 
     return target
 
+def restore_keystore(backup_path: str | Path, path: str | Path) -> None:
+    """Put a backup back where the keystore belongs. An existing keystore is never overwritten."""
+    target = Path(path)
+
+    if target.exists():
+        raise KeyManagementError(f"Keystore already exists: {target}")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(backup_path, target)
+    except OSError as exc:
+        raise KeyManagementError(f"Could not restore {backup_path}") from exc
+
 
 def _aad(store: dict) -> bytes:
     """Everything except the nonce and the encrypted key is authenticated."""
