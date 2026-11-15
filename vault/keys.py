@@ -1,4 +1,7 @@
-"""Key management for sharing (D3): RSA key pairs, PEM storage and key IDs."""
+"""Key pairs (D3, D5): RSA and Ed25519 generation, public PEM files and key IDs.
+
+Private keys are stored only through vault.keystore (D6).
+"""
 import hashlib
 from pathlib import Path
 
@@ -23,16 +26,6 @@ def generate_signing_keypair() -> ed25519.Ed25519PrivateKey:
     return ed25519.Ed25519PrivateKey.generate()
 
 
-def load_signing_private_key(path: str | Path, passphrase: bytes) -> ed25519.Ed25519PrivateKey:
-    try:
-        key = serialization.load_pem_private_key(Path(path).read_bytes(), password=passphrase)
-    except (OSError, ValueError, TypeError) as exc:
-        raise KeyManagementError("Could not load signing key (wrong passphrase or corrupt file)") from exc
-    if not isinstance(key, ed25519.Ed25519PrivateKey):
-        raise KeyManagementError("Only Ed25519 keys can be used for signatures")
-    return key
-
-
 def load_signing_public_key(path: str | Path) -> ed25519.Ed25519PublicKey:
     try:
         key = serialization.load_pem_public_key(Path(path).read_bytes())
@@ -40,29 +33,6 @@ def load_signing_public_key(path: str | Path) -> ed25519.Ed25519PublicKey:
         raise KeyManagementError(f"Could not load public key: {path}") from exc
     if not isinstance(key, ed25519.Ed25519PublicKey):
         raise KeyManagementError("Only Ed25519 keys can be used for signatures")
-    return key
-
-
-def save_private_key(private_key: rsa.RSAPrivateKey | ed25519.Ed25519PrivateKey, path: str | Path, passphrase: bytes) -> None:
-    """Write the private key as PKCS#8 PEM, always encrypted with a passphrase."""
-    if not passphrase:
-        raise KeyManagementError("A passphrase is required to store a private key")
-    pem = private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.BestAvailableEncryption(passphrase),
-    )
-    path = Path(path)
-    path.write_bytes(pem)
-    path.chmod(0o600)
-
-
-def load_private_key(path: str | Path, passphrase: bytes) -> rsa.RSAPrivateKey:
-    try:
-        key = serialization.load_pem_private_key(Path(path).read_bytes(), password=passphrase)
-    except (OSError, ValueError, TypeError) as exc:
-        raise KeyManagementError("Could not load private key (wrong passphrase or corrupt file)") from exc
-    _check_rsa(key.public_key())
     return key
 
 

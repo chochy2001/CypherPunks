@@ -2,10 +2,12 @@
 
     python -m vault encrypt <file> [-o out.sdv] [-k out.key]
     python -m vault decrypt <file.sdv> -k <file.key> [-o out_file]
-    python -m vault keygen <name> [-d folder]
-    python -m vault share <file> -r alice.pub.pem -r bob.pub.pem -s me.sign.key.pem [-o out.sdv]
-    python -m vault open <file.sdv> -i bob.key.pem --sender alice.sign.pub.pem [-o out_file]
+    python -m vault keygen <name> [-d keystore]
+    python -m vault share <file> -r alice.pub.pem -r bob.pub.pem -s keystore/me.sign.key.json [-o out.sdv]
+    python -m vault open <file.sdv> -i keystore/bob.key.json --sender alice.sign.pub.pem [-o out_file]
     python -m vault recipients <file.sdv>
+    python -m vault backup keystore/me.key.json keystore/me.sign.key.json [-d backups]
+    python -m vault restore backups/me.key.json [-d keystore]
 
 D2 note: the per-file key is saved as hex in a separate .key file so the
 owner can decrypt later. Protecting that key (Key Store, password, public
@@ -14,13 +16,15 @@ D3 note: share/open never write the file key to disk. It is wrapped with each
 recipient's RSA public key and stored inside the container.
 D5 note: share always signs and open always verifies first, so unsigned
 containers are no longer accepted by open.
+D6 note: private keys live only in password-protected keystores (.key.json).
+The password is asked for every time a key is needed and is never stored.
 """
 import argparse
 import getpass
 import os
 import sys
 
-from vault import file_vault, hybrid, keys
+from vault import file_vault, hybrid, keys, keystore
 from vault.exceptions import ContainerFormatError, IntegrityError, VaultError
 
 
@@ -46,28 +50,29 @@ def _read_input(path: str) -> bytes:
         return fh.read()
 
 def _ask_passphrase(confirm: bool = False) -> bytes:
-    passphrase = getpass.getpass("Private key passphrase: ")
-    if confirm and passphrase != getpass.getpass("Repeat passphrase: "):
-        raise VaultError("Passphrases do not match")
+    passphrase = getpass.getpass("Keystore password: ")
+    if confirm and passphrase != getpass.getpass("Repeat password: "):
+        raise VaultError("Passwords do not match")
     if not passphrase:
-        raise VaultError("A passphrase is required")
+        raise VaultError("A password is required")
     return passphrase.encode("utf-8")
+
 
 
 def _cmd_keygen(args) -> None:
     os.makedirs(args.dir, exist_ok=True)
-    private_path = os.path.join(args.dir, f"{args.name}.key.pem")
+    private_path = os.path.join(args.dir, f"{args.name}.key.json")
     public_path = os.path.join(args.dir, f"{args.name}.pub.pem")
     if os.path.exists(private_path):
         raise VaultError(f"Key already exists: {private_path}")
     private_key = keys.generate_keypair()
     passphrase = _ask_passphrase(confirm=True)
-    keys.save_private_key(private_key, private_path, passphrase)
+    keystore.save_keystore(private_key, "wrap", private_path, passphrase)
     keys.save_public_key(private_key.public_key(), public_path)
     signing_key = keys.generate_signing_keypair()
-    keys.save_private_key(signing_key, os.path.join(args.dir, f"{args.name}.sign.key.pem"), passphrase)
+    keystore.save_keystore(signing_key, "sign", os.path.join(args.dir, f"{args.name}.sign.key.json"), passphrase)
     keys.save_public_key(signing_key.public_key(), os.path.join(args.dir, f"{args.name}.sign.pub.pem"))
-    print(f"Private key -> {private_path}  (never share it)")
+    print(f"Keystore -> {private_path} (encrypted; never share it)")
     print(f"Public key  -> {public_path}")
     print(f"Key ID      -> {keys.key_id(private_key.public_key())}")
 
@@ -75,8 +80,8 @@ def _cmd_keygen(args) -> None:
 def _cmd_share(args) -> None:
     plaintext = _read_input(args.input)
     public_keys = [keys.load_public_key(path) for path in args.recipient]
-    out = args.output or args.input + ".sdv"    
-    signing_key = keys.load_signing_private_key(args.sign_key, _ask_passphrase())
+    out = args.output or args.input + ".sdv"       
+    signing_key = keystore.load_keystore(args.sign_key, _ask_passphrase(), "sign")
     file_vault._atomic_write(out, hybrid.encrypt_and_sign(plaintext, public_keys, signing_key))
     print(f"Encrypted for {len(public_keys)} recipient(s) -> {out}")
 
@@ -86,18 +91,33 @@ def _cmd_open(args) -> None:
     out = args.output or (args.input[:-4] if args.input.endswith(".sdv") else args.input + ".out")
     if os.path.exists(out) and not args.force:
         raise VaultError(f"Output file already exists: {out}")
-    private_key = keys.load_private_key(args.identity, _ask_passphrase())
+    private_key = keystore.load_keystore(args.identity, _ask_passphrase(), "wrap")
     sender_key = keys.load_signing_public_key(args.sender)
     file_vault._atomic_write(out, hybrid.verify_and_decrypt(data, private_key, sender_key))
     print(f"Decrypted -> {out}")
+
+
+def _cmd_backup(args) -> None:
+    for path in args.input:
+        print(f"Backup -> {keystore.backup_keystore(path, args.dir)}")
+
+
+def _cmd_restore(args) -> None:
+    name = os.path.basename(args.input)
+    usage = "sign" if name.endswith(".sign.key.json") else "wrap"
+    target = os.path.join(args.dir, name)
+    keystore.restore_keystore(args.input, target, _ask_passphrase(), usage)
+    print(f"Restored -> {target}")
+
 
 def _cmd_recipients(args) -> None:
     """Display the key IDs of authorized recipients."""
     for kid in hybrid.list_recipients(_read_input(args.input)):
         print(kid)
 
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="vault", description="Secure Digital Document Vault (D2-D5)")
+    parser = argparse.ArgumentParser(prog="vault", description="Secure Digital Document Vault (D2-D6)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     enc = sub.add_parser("encrypt", help="encrypt a file")
@@ -112,21 +132,21 @@ def build_parser() -> argparse.ArgumentParser:
     dec.add_argument("-f", "--force", action="store_true",
                      help="overwrite the output file if it already exists")
     kg = sub.add_parser("keygen", help="create RSA (sharing) and Ed25519 (signing) key pairs")
-    kg.add_argument("name", help="writes <name>.key.pem, <name>.pub.pem, <name>.sign.key.pem, <name>.sign.pub.pem")
-    kg.add_argument("-d", "--dir", default=".", help="output folder (default: current folder)")
+    kg.add_argument("name", help="writes <name>.key.json, <name>.pub.pem, <name>.sign.key.json, <name>.sign.pub.pem") 
+    kg.add_argument("-d", "--dir", default="keystore", help="output folder (default: keystore)")
     sh = sub.add_parser("share", help="encrypt a file for one or more recipients (D3)")
     sh.add_argument("input")
     sh.add_argument("-r", "--recipient", action="append", required=True,
                     metavar="PUB_PEM",
                     help="recipient public key; repeat once per recipient")
-    sh.add_argument("-s", "--sign-key", required=True, metavar="SIGN_KEY_PEM",
-                help="your Ed25519 private signing key")
+    sh.add_argument("-s", "--sign-key", required=True, metavar="SIGN_KEYSTORE",
+                help="your signing keystore (<name>.sign.key.json)")
     sh.add_argument("-o", "--output", help="container path (default: <input>.sdv)")
 
     op = sub.add_parser("open", help="decrypt a shared container with your private key (D3)")
     op.add_argument("input")
-    op.add_argument("-i", "--identity", required=True, metavar="KEY_PEM",
-                    help="your private key")
+    op.add_argument("-i", "--identity", required=True, metavar="KEYSTORE",
+                    help="your keystore (<name>.key.json)")
     op.add_argument("--sender", required=True, metavar="SIGN_PUB_PEM",
                     help="public signing key of the expected sender")
     op.add_argument("-o", "--output", help="output path (default: input without .sdv)")
@@ -138,6 +158,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="list the key IDs that can open a container (D3)"
     )
     rc.add_argument("input")
+    
+    bk = sub.add_parser("backup", help="copy encrypted keystores to a backup folder (D6)")
+    bk.add_argument("input", nargs="+", metavar="KEYSTORE")
+    bk.add_argument("-d", "--dir", default="backups", help="backup folder (default: backups)")
+    rs = sub.add_parser("restore", help="restore a keystore from a backup, after checking its password (D6)")
+    rs.add_argument("input", metavar="BACKUP")
+    rs.add_argument("-d", "--dir", default="keystore", help="keystore folder (default: keystore)")
+    
     return parser
 
 
@@ -161,6 +189,10 @@ def main(argv: list[str] | None = None) -> int:
             _cmd_share(args)
         elif args.command == "open":
             _cmd_open(args)
+        elif args.command == "backup":
+            _cmd_backup(args)
+        elif args.command == "restore":
+            _cmd_restore(args)
         else:
             _cmd_recipients(args)
         return 0
