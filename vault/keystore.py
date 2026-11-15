@@ -88,6 +88,8 @@ def load_keystore(path: str | Path, password: bytes):
 
 def _aad(store: dict) -> bytes:
     """Everything except the nonce and the encrypted key is authenticated."""
+    fields = ("format", "kdf_parameters", "salt", "metadata")
+    return crypto_core.canonicalize_metadata({name: store[name] for name in fields})
 
 def _b64e(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
