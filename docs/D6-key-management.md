@@ -65,3 +65,9 @@ A backup is an exact copy of the keystore file. Because the file is already encr
 python -m vault backup keystore/alice.key.json keystore/alice.sign.key.json # -> backups/
 python -m vault restore backups/alice.key.json                  # -> keystore/
 ```
+
+Restoring is stricter than backing up. `restore` asks for the password and unlocks the backup
+before copying it, so a modified backup or one that belongs to another user is refused instead
+of replacing a working keystore, and an existing keystore is never overwritten. Backups should
+be kept away from the device that holds the keystore, because a single loss would otherwise
+take both. Public keys are not secret and need no special handling.
