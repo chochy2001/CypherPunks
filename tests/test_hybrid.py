@@ -173,7 +173,7 @@ def test_duplicate_recipient_rejected(alice):
 
 
 def test_cli_share_open_and_recipients(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "pass-phrase")
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "correct horse battery")
     for name in ("alice", "bob", "eve"):
         assert cli.main(["keygen", name, "-d", str(tmp_path)]) == 0
     src = tmp_path / "report.pdf"
@@ -182,18 +182,18 @@ def test_cli_share_open_and_recipients(tmp_path, monkeypatch, capsys):
     
     assert cli.main(["share", str(src), "-r", str(tmp_path / "alice.pub.pem"),
                      "-r", str(tmp_path / "bob.pub.pem"),
-                     "-s", str(tmp_path / "alice.sign.key.pem")]) == 0
+                     "-s", str(tmp_path / "alice.sign.key.json")]) == 0
     capsys.readouterr()
     assert cli.main(["recipients", str(sdv)]) == 0
     assert len(capsys.readouterr().out.split()) == 2
 
     out = tmp_path / "bob.pdf"    
     sender = str(tmp_path / "alice.sign.pub.pem")
-    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "bob.key.pem"),
+    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "bob.key.json"),
                      "--sender", sender, "-o", str(out)]) == 0
     assert out.read_bytes() == PLAINTEXT
 
     denied = tmp_path / "eve.pdf"
-    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "eve.key.pem"),
+    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "eve.key.json"),
                      "--sender", sender, "-o", str(denied)]) == 2
     assert not denied.exists()
