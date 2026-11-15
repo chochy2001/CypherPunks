@@ -2,10 +2,12 @@
 
     python -m vault encrypt <file> [-o out.sdv] [-k out.key]
     python -m vault decrypt <file.sdv> -k <file.key> [-o out_file]
-    python -m vault keygen <name> [-d folder]
-    python -m vault share <file> -r alice.pub.pem -r bob.pub.pem -s me.sign.key.pem [-o out.sdv]
-    python -m vault open <file.sdv> -i bob.key.pem --sender alice.sign.pub.pem [-o out_file]
+    python -m vault keygen <name> [-d keystore]
+    python -m vault share <file> -r alice.pub.pem -r bob.pub.pem -s keystore/me.sign.key.json [-o out.sdv]
+    python -m vault open <file.sdv> -i keystore/bob.key.json --sender alice.sign.pub.pem [-o out_file]
     python -m vault recipients <file.sdv>
+    python -m vault backup keystore/me.key.json keystore/me.sign.key.json [-d backups]
+    python -m vault restore backups/me.key.json [-d keystore]
 
 D2 note: the per-file key is saved as hex in a separate .key file so the
 owner can decrypt later. Protecting that key (Key Store, password, public
@@ -14,6 +16,8 @@ D3 note: share/open never write the file key to disk. It is wrapped with each
 recipient's RSA public key and stored inside the container.
 D5 note: share always signs and open always verifies first, so unsigned
 containers are no longer accepted by open.
+D6 note: private keys live only in password-protected keystores (.key.json).
+The password is asked for every time a key is needed and is never stored.
 """
 import argparse
 import getpass
@@ -46,11 +50,11 @@ def _read_input(path: str) -> bytes:
         return fh.read()
 
 def _ask_passphrase(confirm: bool = False) -> bytes:
-    passphrase = getpass.getpass("Private key passphrase: ")
-    if confirm and passphrase != getpass.getpass("Repeat passphrase: "):
-        raise VaultError("Passphrases do not match")
+    passphrase = getpass.getpass("Keystore password: ")
+    if confirm and passphrase != getpass.getpass("Repeat password: "):
+        raise VaultError("Passwords do not match")
     if not passphrase:
-        raise VaultError("A passphrase is required")
+        raise VaultError("A password is required")
     return passphrase.encode("utf-8")
 
 
@@ -113,7 +117,7 @@ def _cmd_recipients(args) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="vault", description="Secure Digital Document Vault (D2-D5)")
+    parser = argparse.ArgumentParser(prog="vault", description="Secure Digital Document Vault (D2-D6)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     enc = sub.add_parser("encrypt", help="encrypt a file")
@@ -128,21 +132,21 @@ def build_parser() -> argparse.ArgumentParser:
     dec.add_argument("-f", "--force", action="store_true",
                      help="overwrite the output file if it already exists")
     kg = sub.add_parser("keygen", help="create RSA (sharing) and Ed25519 (signing) key pairs")
-    kg.add_argument("name", help="writes <name>.key.pem, <name>.pub.pem, <name>.sign.key.pem, <name>.sign.pub.pem") 
+    kg.add_argument("name", help="writes <name>.key.json, <name>.pub.pem, <name>.sign.key.json, <name>.sign.pub.pem") 
     kg.add_argument("-d", "--dir", default="keystore", help="output folder (default: keystore)")
     sh = sub.add_parser("share", help="encrypt a file for one or more recipients (D3)")
     sh.add_argument("input")
     sh.add_argument("-r", "--recipient", action="append", required=True,
                     metavar="PUB_PEM",
                     help="recipient public key; repeat once per recipient")
-    sh.add_argument("-s", "--sign-key", required=True, metavar="SIGN_KEY_PEM",
-                help="your Ed25519 private signing key")
+    sh.add_argument("-s", "--sign-key", required=True, metavar="SIGN_KEYSTORE",
+                help="your signing keystore (<name>.sign.key.json)")
     sh.add_argument("-o", "--output", help="container path (default: <input>.sdv)")
 
     op = sub.add_parser("open", help="decrypt a shared container with your private key (D3)")
     op.add_argument("input")
-    op.add_argument("-i", "--identity", required=True, metavar="KEY_PEM",
-                    help="your private key")
+    op.add_argument("-i", "--identity", required=True, metavar="KEYSTORE",
+                    help="your keystore (<name>.key.json)")
     op.add_argument("--sender", required=True, metavar="SIGN_PUB_PEM",
                     help="public signing key of the expected sender")
     op.add_argument("-o", "--output", help="output path (default: input without .sdv)")
