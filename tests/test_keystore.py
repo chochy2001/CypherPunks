@@ -1,4 +1,5 @@
 """D6 required tests: a private key is usable only with its password."""
+import base64
 import json
 
 import pytest
@@ -38,3 +39,28 @@ def test_correct_password_grants_access(bob_keystore, bob, shared):
 def test_wrong_password_denied(bob_keystore):
     with pytest.raises(KeyManagementError):
         keystore.load_keystore(bob_keystore, b"correct horse battery stapler", "wrap")
+
+
+def _flip(value: str) -> str:
+    """Change one bit of a Base64 field."""
+    data = bytearray(base64.b64decode(value))
+    data[0] ^= 0x01
+    return base64.b64encode(bytes(data)).decode("ascii")
+
+
+# Required test 3
+@pytest.mark.parametrize("mutate", [
+    lambda store: store.update(
+        encrypted_private_key=_flip(store["encrypted_private_key"])
+    ),
+    lambda store: store.update(salt=_flip(store["salt"])),
+    lambda store: store["kdf_parameters"].update(n=2**14),
+    lambda store: store["metadata"].update(key_id="0" * 64),
+], ids=["encrypted_key", "salt", "kdf_parameters", "metadata"])
+def test_modified_keystore_fails(bob_keystore, mutate):
+    store = json.loads(bob_keystore.read_text(encoding="utf-8"))
+    mutate(store)
+    bob_keystore.write_text(json.dumps(store), encoding="utf-8")
+
+    with pytest.raises(KeyManagementError):
+        keystore.load_keystore(bob_keystore, PASSWORD, "wrap")
