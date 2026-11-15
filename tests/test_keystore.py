@@ -3,6 +3,7 @@ import base64
 import json
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 
 from vault import hybrid, keys, keystore
 from vault.exceptions import KeyManagementError
@@ -66,7 +67,6 @@ def test_modified_keystore_fails(bob_keystore, mutate):
         keystore.load_keystore(bob_keystore, PASSWORD, "wrap")
 
 
-
 # Required test 4
 def test_backup_then_restore_works(tmp_path, bob_keystore, shared):
     backup = keystore.backup_keystore(bob_keystore, tmp_path / "backups")
@@ -76,3 +76,19 @@ def test_backup_then_restore_works(tmp_path, bob_keystore, shared):
     keystore.restore_keystore(backup, bob_keystore, PASSWORD, "wrap")
     restored = keystore.load_keystore(bob_keystore, PASSWORD, "wrap")
     assert hybrid.decrypt_as_recipient(shared, restored) == PLAINTEXT
+
+
+# Required test 5
+def test_stolen_keystore_alone_cannot_decrypt(bob_keystore, bob):
+    """The attacker copies the keystore but does not know the password."""
+    stolen = json.loads(bob_keystore.read_text(encoding="utf-8"))
+    plain_key = bob.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    assert plain_key not in base64.b64decode(stolen["encrypted_private_key"])
+
+    for guess in (b"", b"password", b"123456789012", b"correct horse battery"):
+        with pytest.raises(KeyManagementError):
+            keystore.load_keystore(bob_keystore, guess, "wrap")
