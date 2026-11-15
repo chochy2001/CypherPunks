@@ -64,3 +64,15 @@ def test_modified_keystore_fails(bob_keystore, mutate):
 
     with pytest.raises(KeyManagementError):
         keystore.load_keystore(bob_keystore, PASSWORD, "wrap")
+
+
+
+# Required test 4
+def test_backup_then_restore_works(tmp_path, bob_keystore, shared):
+    backup = keystore.backup_keystore(bob_keystore, tmp_path / "backups")
+    assert backup.read_bytes() == bob_keystore.read_bytes()  # the copy stays encrypted
+
+    bob_keystore.unlink()  # the original is lost
+    keystore.restore_keystore(backup, bob_keystore, PASSWORD, "wrap")
+    restored = keystore.load_keystore(bob_keystore, PASSWORD, "wrap")
+    assert hybrid.decrypt_as_recipient(shared, restored) == PLAINTEXT
