@@ -71,3 +71,24 @@ before copying it, so a modified backup or one that belongs to another user is r
 of replacing a working keystore, and an existing keystore is never overwritten. Backups should
 be kept away from the device that holds the keystore, because a single loss would otherwise
 take both. Public keys are not secret and need no special handling.
+
+
+### Security assumptions
+
+1. The device is trusted while a key is unlocked: no malware reads the keyboard or the memory of the process (D1, assumption 3).
+2. The password is known only to its owner, is not reused elsewhere and has at least 12 characters.
+3. Public keys are authentic (D1, assumption 4 and SR-10). The keystore protects private keys, not the address book.
+4. The operating system's random generator (`os.urandom`) is sound, since it produces the salt and the nonce.
+5. Backups are kept apart from the device that holds the keystore.
+
+## 3. Key lifecycle
+
+| Stage | What it means | How the vault handles it |
+| --- | --- | --- |
+| Generation | Create a user's key pairs | `keygen` creates an RSA-3072 pair (wrap) and an Ed25519 pair (sign) from the OS random generator, asks for the password twice and writes both keystores right away. The private key never reaches the disk in plaintext. |
+| Usage | Use a private key | `share` unlocks the signing keystore and `open` unlocks the wrapping keystore. Each command asks for the password, uses the key once and ends; nothing is cached between commands. |
+| Rotation | Replace a key that is still safe | Done by hand with existing commands: `keygen alice-2027` creates new pairs, the new `.pub.pem` files go to contacts, and new packages are shared with the new key ID. The old keystore and its backup are kept only to open packages received before the change. |
+| Compromise response | A private key, or a keystore together with its password, has leaked | Generate new pairs as in rotation, tell contacts to remove the old public keys and stop accepting the old signer ID, and share again any file that still matters. Every package encrypted for the old key must be treated as readable by the attacker. |
+| Expiration (optional) | Retire a key after a set time | Not automated. `created_at` in the metadata records when each key was created, so a team rule such as "rotate every year" can be checked by hand. |
+
+Rotation and compromise response are defined but not automated, which D6 allows. Both reuse `keygen`, `share`, `backup` and `restore`, so no extra code is needed.
