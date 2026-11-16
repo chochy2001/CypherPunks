@@ -125,6 +125,8 @@ The following assets were identified as relevant to the security of the platform
 | ID | Asset | Why it must be protected | What must hold | Covered by |
 | --- | --- | --- | --- | --- |
 | A1 | File contents | The original information sent by Alice must remain confidential and must not be modified during transmission. | Confidentiality and integrity | SR-01, SR-02 |
+| A2 | Metadata | Information associated with the Secure Package must not be modified without detection. | Integrity | SR-03, SR-07 |
+| A3 | Private keys | Private keys must remain protected inside the trusted environment and must not be available to attackers, even if the stored Key Store is copied. | Confidentiality | SR-08, SR-09 |
 | A4 | Protected file key | The key used to protect the file must only be recoverable by the intended recipient. | Confidentiality | SR-01 |
 | A5 | User credentials | Credentials used to access the system must not be obtained by an attacker and used to impersonate a legitimate user. | Confidentiality | SR-09 |
 | A6 | Sender information | Bob must be able to determine whether the package actually originated from Alice. | Authenticity | SR-04 |
@@ -226,6 +228,20 @@ An attacker intercepts a Secure Package and modifies the recipient information o
 The receiving system must detect unauthorized modification of recipient information before accepting the package.
 
 *Targets A7 · Stopped by SR-03*
+
+
+---
+
+#### Scenario S6 — Private Keys: Stolen Key Store
+
+An attacker copies a user's Key Store from a lost laptop, a synchronized folder or a backup.
+
+Without the password, the attacker can only guess it offline. Every guess must cost a full run of the key derivation function, and any change to the stored file must be detected.
+
+The system must ensure that a copy of the Key Store alone does not give access to the private keys. D6 implements this with a password-protected keystore ([D6-key-management.md](D6-key-management.md)).
+
+*Targets A3, A5 · Stopped by SR-08, SR-09*
+
 
 Every requirement above can only hold if certain things are true about the environment. Those conditions are listed next.
 

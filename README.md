@@ -14,14 +14,15 @@ Two people who do not share a trusted network need to exchange a file that trave
 | D2 | Single-owner AEAD encryption (AES-256-GCM, container `SDV1`) | Implemented and tested |
 | D3 | Hybrid multi-recipient sharing (RSA-OAEP key wrapping, container `SDV2`) | Implemented and tested |
 | D5 | Digital signatures and sender authentication (Ed25519) | Implemented and tested |
+| D6 | Key management: password-protected keystore (scrypt + AES-256-GCM), backup and restore | Implemented and tested |
 
 ## Architecture
 
-![Architecture after D3: sender and recipient trusted environments, untrusted channel with the SDV2 Secure Package, attacker and non-recipient user, trust boundaries TB1–TB4 and data flows DF1–DF11](docs/architecture_diagram_d3.png)
+![Architecture after D6: sender and recipient trusted environments with their Key Stores, untrusted channel with the signed SDV2 Secure Package and the keystore backups, attacker and non-recipient user, trust boundaries TB1–TB4 and data flows DF1–DF12](docs/architecture_diagram_d6.png)
 
-The sender's Vault generates a fresh file key, encrypts the file once with AES-256-GCM and wraps that key with RSA-OAEP for every recipient. The Secure Package crosses the untrusted zone, where an attacker can read, copy, modify, replay or delete it. Each recipient's Vault parses the header, finds its own key ID, unwraps the file key with its private key, verifies the tag and only then writes the file. The diagram shows the system at D3: since D5, signing and signature verification (drawn in dashed grey) are implemented. The freshness check is still planned.
+The sender unlocks their signing key from a password-protected keystore, generates a fresh file key, encrypts the file once with AES-256-GCM, wraps that key with RSA-OAEP for every recipient and signs the finished container with Ed25519. The Secure Package crosses the untrusted zone, where an attacker can read, copy, modify, replay or delete it. Each recipient unlocks their own keystore, verifies the signature, finds their key ID in the header, unwraps the file key, verifies the tag and only then writes the file. Keystores can be backed up to untrusted storage because they stay encrypted. Only the freshness check, drawn in dashed grey, is still planned.
 
-The original D1 diagram is kept in [docs/architecture_diagram.png](docs/architecture_diagram.png).
+Earlier versions are kept in [docs/architecture_diagram.png](docs/architecture_diagram.png) (D1) and [docs/architecture_diagram_d3.png](docs/architecture_diagram_d3.png) (D3).
 
 ## Repository layout
 
@@ -30,14 +31,15 @@ The original D1 diagram is kept in [docs/architecture_diagram.png](docs/architec
 | `vault/crypto_core.py` | Key and nonce generation, canonical metadata, AES-256-GCM encrypt / decrypt |
 | `vault/container.py` | `SDV1` single-owner container: pack, unpack, structural validation |
 | `vault/file_vault.py` | File-level API for D2, atomic writes |
-| `vault/keys.py` | RSA-3072 and Ed25519 key pairs, passphrase-protected PEM storage, key IDs |
+| `vault/keys.py` | RSA-3072 and Ed25519 key pairs, public PEM files, key IDs |
+| `vault/keystore.py` | Password-protected keystore (scrypt + AES-256-GCM), backup and restore |
 | `vault/keywrap.py` | Wrap / unwrap the 32-byte file key with RSA-OAEP-SHA256 |
 | `vault/container_v2.py` | `SDV2` multi-recipient container, strict header validation, AAD |
 | `vault/signatures.py` | Hash, sign and verify with Ed25519 |
 | `vault/hybrid.py` | Encrypt once for many recipients and sign, verify and decrypt as one of them |
 | `vault/cli.py` | Command-line interface |
 | `vault/exceptions.py` | `VaultError`, `IntegrityError`, `ContainerFormatError`, `KeyManagementError` |
-| `tests/` | 75 unit tests |
+| `tests/` | 83 unit tests |
 | `docs/` | Design documents and architecture diagrams |
 
 ## Requirements
@@ -79,18 +81,29 @@ Every shared package is signed with the sender's **Ed25519** key. The signature 
 Full design and security decisions: [`docs/D5-signature-design.md`](docs/D5-signature-design.md)
 
 ```bash
-python -m vault keygen alice -d keys      # RSA pair + signing pair (alice.sign.key.pem, alice.sign.pub.pem)
-python -m vault keygen bob -d keys
-python -m vault share report.pdf -r keys/alice.pub.pem -r keys/bob.pub.pem -s keys/alice.sign.key.pem   # -> report.pdf.sdv
+python -m vault keygen alice            # keystore/: alice.key.json, alice.pub.pem, alice.sign.key.json, alice.sign.pub.pem
+python -m vault keygen bob
+python -m vault share report.pdf -r keystore/alice.pub.pem -r keystore/bob.pub.pem -s keystore/alice.sign.key.json   # -> report.pdf.sdv
 python -m vault recipients report.pdf.sdv             # key IDs allowed to open it
-python -m vault open report.pdf.sdv -i keys/bob.key.pem --sender keys/alice.sign.pub.pem -o report-bob.pdf
+python -m vault open report.pdf.sdv -i keystore/bob.key.json --sender keystore/alice.sign.pub.pem -o report-bob.pdf
 ```
 
-Private keys are always stored encrypted with a passphrase. Never commit `*.pem` files.
+## D6: Key management
+
+Private keys are never stored in plaintext. Each one lives in its own keystore file, encrypted with AES-256-GCM under a key that **scrypt** derives from the user's password. The password is asked for every time a key is needed and is never stored. Any change to a keystore is detected.
+
+Full design and security discussion: [`docs/D6-key-management.md`](docs/D6-key-management.md)
+
+```bash
+python -m vault backup keystore/alice.key.json keystore/alice.sign.key.json   # -> backups/
+python -m vault restore backups/alice.key.json                               # asks for the password -> keystore/
+```
+
+Never commit `keystore/`, `backups/` or `*.pem` files.
 
 ## D4 demo: required scenarios
 
-The `demo/` folder is ignored by git, so create it locally. Copy any PDF to `demo/reporte.pdf` and generate the three key pairs (each asks for a passphrase twice):
+The `demo/` folder is ignored by git, so create it locally. Copy any PDF to `demo/reporte.pdf` and generate the three key pairs (each asks twice for a password of at least 12 characters):
 
 ```bash
 python -m vault keygen alice -d demo
@@ -100,16 +113,16 @@ python -m vault keygen eve -d demo
 
 | # | Scenario | Command | Expected result |
 | --- | --- | --- | --- |
-| 1 | Valid encryption for Alice and Bob | `python -m vault share demo/reporte.pdf -r demo/alice.pub.pem -r demo/bob.pub.pem -s demo/alice.sign.key.pem -o demo/shared.sdv` | Container written; `python -m vault recipients demo/shared.sdv` lists two key IDs |
-| 2 | Shared file, recipient decrypts | `python -m vault open demo/shared.sdv -i demo/bob.key.pem --sender demo/alice.sign.pub.pem -o demo/bob-out.pdf` | `bob-out.pdf` identical to the original |
-| 3 | Non-recipient cannot decrypt | `python -m vault open demo/shared.sdv -i demo/eve.key.pem --sender demo/alice.sign.pub.pem -o demo/eve-out.pdf` | `ERROR: authentication failed`, no file written |
+| 1 | Valid encryption for Alice and Bob | `python -m vault share demo/reporte.pdf -r demo/alice.pub.pem -r demo/bob.pub.pem -s demo/alice.sign.key.json -o demo/shared.sdv` | Container written; `python -m vault recipients demo/shared.sdv` lists two key IDs |
+| 2 | Shared file, recipient decrypts | `python -m vault open demo/shared.sdv -i demo/bob.key.json --sender demo/alice.sign.pub.pem -o demo/bob-out.pdf` | `bob-out.pdf` identical to the original |
+| 3 | Non-recipient cannot decrypt | `python -m vault open demo/shared.sdv -i demo/eve.key.json --sender demo/alice.sign.pub.pem -o demo/eve-out.pdf` | `ERROR: authentication failed`, no file written |
 | 4 | Modified file fails | see below | `ERROR: authentication failed`, no file written |
 
 Scenario 4 flips the last byte of the container and tries to open the copy:
 
 ```bash
 python -c "d=bytearray(open('demo/shared.sdv','rb').read()); d[-1]^=1; open('demo/tampered.sdv','wb').write(d)"
-python -m vault open demo/tampered.sdv -i demo/bob.key.pem --sender demo/alice.sign.pub.pem -o demo/bob-tampered.pdf
+python -m vault open demo/tampered.sdv -i demo/bob.key.json --sender demo/alice.sign.pub.pem -o demo/bob-tampered.pdf
 ```
 
 `open` refuses to overwrite an existing output, so delete old outputs before running the demo again.
@@ -130,6 +143,7 @@ python -m pytest -v
 | `tests/test_cli.py` | 5 | D2 command-line flow, tampered input, key file permissions, no overwrite |
 | `tests/test_hybrid.py` | 18 | Two recipients, unauthorized user, tampered / swapped / removed recipients, wrong keys, downgrade, truncation |
 | `tests/test_signatures.py` | 5 | D5 required tests A to E |
+| `tests/test_keystore.py` | 8 | D6 required tests: correct and wrong password, modified keystore (4 fields), backup and restore, stolen keystore |
 
 The mapping from each requirement to its tests is in the design documents.
 
@@ -137,5 +151,6 @@ The mapping from each requirement to its tests is in the design documents.
 
 - **Freshness (SR-05)**: a captured package can be replayed. `created_at` and `file_id` are signed, but nothing tracks them yet.
 - **Authentic public keys (SR-10)**: public keys are `.pub.pem` files the users trust; there is no certificate validation yet.
+- **Key lifecycle (D6)**: rotation and compromise response are manual procedures, and a forgotten password cannot be recovered.
 - **`SDV1` file name**: the single-owner format keeps the original file name in the clear (authenticated, but visible). `SDV2` no longer stores it.
 
