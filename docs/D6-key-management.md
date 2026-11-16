@@ -83,6 +83,9 @@ take both. Public keys are not secret and need no special handling.
 
 ## 3. Key lifecycle
 
+The stages below follow the key lifecycle described in NIST SP 800-57 [3].
+
+
 | Stage | What it means | How the vault handles it |
 | --- | --- | --- |
 | Generation | Create a user's key pairs | `keygen` creates an RSA-3072 pair (wrap) and an Ed25519 pair (sign) from the OS random generator, asks for the password twice and writes both keystores right away. The private key never reaches the disk in plaintext. |
@@ -124,3 +127,44 @@ If malware runs on the device while the user types the password, or while a comm
 | Using a key for the wrong job, or a keystore whose key does not match its key ID | Reading the memory of a running process |
 | Restoring a modified or foreign backup | A forgotten password: there is no recovery, and the backup needs the same password |
 | The password being stored or logged | Revoking a compromised key automatically: contacts are told by hand |
+
+## 6. Security discussion
+
+### Why encrypt private keys?
+
+A private key is the user's identity in the vault. Whoever holds the RSA key can open every package sent to the user, and whoever holds the Ed25519 key can sign packages in the user's name. Keys leak through storage more often than through cryptography: a copied disk, a backup or a synchronized folder. Encrypting the key makes a copy of the file useless without the password, which never leaves the user's head.
+
+### What happens if the password is weak?
+
+An attacker with the keystore can guess offline, at their own pace, and scrypt only makes each guess slower. Section 5.B gives the details. In short, a weak password turns a stolen keystore into a stolen key.
+
+### What are the system limitations?
+
+- The vault cannot detect a compromised device (Section 5.C).
+- Password quality is enforced only by length.
+- A forgotten password cannot be recovered, and backups do not help with that.
+- Rotation and revocation are manual procedures.
+- Python cannot reliably erase the decrypted key from memory. The vault limits its lifetime to one command but cannot wipe it.
+- The per-file key file of the single-owner D2 mode (`.key`) is a symmetric key, not a private key, and is still stored in hex outside the keystore.
+
+## 7. Tests
+
+Run with `python -m pytest -v` (`tests/test_keystore.py`).
+
+| Requirement | Test |
+| --- | --- |
+| Correct password, access granted | `test_correct_password_grants_access` |
+| Wrong password, access denied | `test_wrong_password_denied` |
+| Modified keystore, failure | `test_modified_keystore_fails` (encrypted key, salt, KDF parameters, metadata) |
+| Backup, then restore works | `test_backup_then_restore_works` |
+| Stolen keystore alone cannot decrypt | `test_stolen_keystore_alone_cannot_decrypt` |
+
+## References
+
+[1] C. Percival and S. Josefsson, "The scrypt Password-Based Key Derivation Function," RFC 7914, IETF, 2016.
+
+[2] OWASP Foundation, "Password Storage Cheat Sheet," OWASP Cheat Sheet Series. [Online]. Available: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+
+[3] E. Barker, "Recommendation for Key Management: Part 1 – General," NIST SP 800-57 Part 1 Rev. 5, 2020.
+
+[4] Python Cryptographic Authority, "Key derivation functions — cryptography documentation." [Online]. Available: https://cryptography.io/en/latest/hazmat/primitives/key-derivation-functions/
