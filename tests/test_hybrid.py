@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from vault import cli, container_v2, crypto_core, hybrid, keys, keywrap
+from vault import cli, container_v2, crypto_core, hybrid, keys, keystore, keywrap
 from vault.exceptions import IntegrityError, KeyManagementError, VaultError
 
 PLAINTEXT = b"%PDF-1.7\n" + b"contenido confidencial " * 2000
@@ -34,17 +34,17 @@ def test_key_id_is_deterministic(alice):
     assert len(keys.key_id(alice.public_key())) == 64
 
 
-def test_private_key_roundtrip_with_passphrase(tmp_path, alice):
-    # Save and reload a private key using a password.
-    path = tmp_path / "alice.key.pem"
-    keys.save_private_key(alice, path, b"correct horse")
-    loaded = keys.load_private_key(path, b"correct horse")
+def test_private_key_roundtrip_with_password(tmp_path, alice):
+    # Save and reload a private key through the keystore (D6).
+    path = tmp_path / "alice.key.json"
+    keystore.save_keystore(alice, "wrap", path, b"correct horse battery")
+    loaded = keystore.load_keystore(path, b"correct horse battery", "wrap")
 
     assert keys.key_id(loaded.public_key()) == keys.key_id(alice.public_key())
 
     # A wrong password must be rejected.
     with pytest.raises(KeyManagementError):
-        keys.load_private_key(path, b"wrong")
+        keystore.load_keystore(path, b"wrong password", "wrap")
 
 
 def test_weak_rsa_key_rejected():
@@ -173,7 +173,7 @@ def test_duplicate_recipient_rejected(alice):
 
 
 def test_cli_share_open_and_recipients(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "pass-phrase")
+    monkeypatch.setattr(cli.getpass, "getpass", lambda prompt="": "correct horse battery")
     for name in ("alice", "bob", "eve"):
         assert cli.main(["keygen", name, "-d", str(tmp_path)]) == 0
     src = tmp_path / "report.pdf"
@@ -182,18 +182,18 @@ def test_cli_share_open_and_recipients(tmp_path, monkeypatch, capsys):
     
     assert cli.main(["share", str(src), "-r", str(tmp_path / "alice.pub.pem"),
                      "-r", str(tmp_path / "bob.pub.pem"),
-                     "-s", str(tmp_path / "alice.sign.key.pem")]) == 0
+                     "-s", str(tmp_path / "alice.sign.key.json")]) == 0
     capsys.readouterr()
     assert cli.main(["recipients", str(sdv)]) == 0
     assert len(capsys.readouterr().out.split()) == 2
 
     out = tmp_path / "bob.pdf"    
     sender = str(tmp_path / "alice.sign.pub.pem")
-    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "bob.key.pem"),
+    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "bob.key.json"),
                      "--sender", sender, "-o", str(out)]) == 0
     assert out.read_bytes() == PLAINTEXT
 
     denied = tmp_path / "eve.pdf"
-    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "eve.key.pem"),
+    assert cli.main(["open", str(sdv), "-i", str(tmp_path / "eve.key.json"),
                      "--sender", sender, "-o", str(denied)]) == 2
     assert not denied.exists()

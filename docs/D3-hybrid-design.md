@@ -6,8 +6,7 @@ D3 extends the vault from a single owner to **several authorized recipients**. A
 
 | File | Responsibility |
 | --- | --- |
-| `vault/keys.py` | RSA-3072 key pairs, passphrase-protected PEM storage, key IDs |
-| `vault/keywrap.py` | Wrap / unwrap the 32-byte file key with RSA-OAEP |
+| `vault/keys.py` | RSA-3072 key pairs and key IDs. Private keys were stored as passphrase-protected PEM files until D6 replaced them with the keystore |
 | `vault/container_v2.py` | `SDV2` multi-recipient format, header validation, AAD |
 | `vault/hybrid.py` | Encrypt for many recipients, decrypt as one of them |
 | `vault/cli.py` | New commands: `keygen`, `share`, `open`, `recipients` |
@@ -82,7 +81,7 @@ Run with `python -m pytest -v` (`tests/test_hybrid.py`).
 | Tampered recipient list fails | `test_tampered_recipient_list_fails`, `test_swapped_identities_fail` |
 | Wrong private key fails | `test_wrong_private_key_fails`, `test_wrong_public_key_at_encryption_locks_out_intended_recipient` |
 | Removing a recipient entry breaks access | `test_removing_recipient_entry_breaks_access` |
-| Supporting checks | downgrade, bit-flip, truncation, duplicate recipients, key ID determinism, weak keys, passphrase round-trip |
+| Supporting checks | downgrade, bit-flip, truncation, duplicate recipients, key ID determinism, weak keys, password round-trip through the keystore (D6)|
 
 ## References
 
