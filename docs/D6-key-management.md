@@ -92,3 +92,35 @@ take both. Public keys are not secret and need no special handling.
 | Expiration (optional) | Retire a key after a set time | Not automated. `created_at` in the metadata records when each key was created, so a team rule such as "rotate every year" can be checked by hand. |
 
 Rotation and compromise response are defined but not automated, which D6 allows. Both reuse `keygen`, `share`, `backup` and `restore`, so no extra code is needed.
+
+## 4. Access control via keys
+
+Only the holder of the right private key can decrypt. `open` unwraps the file key with the RSA key unlocked from the keystore, and sharing still depends on the encrypted file keys from D3: the container stores one wrapped file key per recipient and nothing else that could open it.
+
+Key identity is consistent. A single rule, SHA-256 of the DER public key, gives the key ID everywhere: the recipient entries in `SDV2` (D3), `signer_id` (D5) and `key_id` in the keystore metadata (D6). When a keystore is unlocked, the vault computes the ID of the decrypted key again and rejects the keystore if it does not match the one stored in the metadata.
+
+Key usage is never ambiguous. Each keystore holds one key with one usage: `wrap` for RSA and `sign` for Ed25519. The caller always states which one it needs (`share` asks for `sign`, `open` asks for `wrap`), and `load_keystore` refuses any other usage, so a signing key can never be used to unwrap a file key, or the other way round.
+
+## 5. Threat model alignment
+
+### A. What if an attacker steals the keystore?
+
+They get the encrypted key, the salt and the parameters, but not the password. To recover the key they have to guess the password offline, and each guess costs a full scrypt run with 128 MiB of memory. Editing the file does not help, because every field is authenticated. Required test 5 checks this: the stolen file does not contain the plaintext key, and wrong passwords do not open it. This is scenario S3 of D1, covered by SR-08.
+
+### B. What if a password is weak?
+
+The keystore is only as strong as its password. scrypt makes every guess expensive, but an offline attacker can still try a list of common passwords, and a weak one will fall sooner or later. The 12-character minimum rules out the shortest passwords, but the vault does not check whether a password is common or reused. If a weak password may have been exposed, the user follows the compromise response in Section 3.
+
+### C. What if a device is compromised?
+
+If malware runs on the device while the user types the password, or while a command holds the unlocked key, it can capture both, and the keystore cannot prevent that. D1 assumes the trusted environment works correctly (assumption 3). The design limits the damage: the password is never stored, the key is decrypted only for one command, and a device stolen while the vault is not running is the same as case A. After a compromise, the user follows the compromise response in Section 3 from a clean device.
+
+### What the system protects against and what it does not
+
+| Protects against | Does not protect against |
+| --- | --- |
+| A stolen keystore or backup without its password | Malware or a keylogger on the device while a key is in use |
+| Changes to any field of the keystore | A weak or reused password, given enough guesses |
+| Using a key for the wrong job, or a keystore whose key does not match its key ID | Reading the memory of a running process |
+| Restoring a modified or foreign backup | A forgotten password: there is no recovery, and the backup needs the same password |
+| The password being stored or logged | Revoking a compromised key automatically: contacts are told by hand |
