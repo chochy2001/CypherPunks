@@ -11,7 +11,7 @@ Two people who do not share a trusted network need to exchange a file that trave
 | Deliverable | Content | Status |
 | --- | --- | --- |
 | D1 | Architecture and threat model | [docs/D1-architecture-threat-model.md](docs/D1-architecture-threat-model.md) |
-| D2 | Single-owner AEAD encryption (AES-256-GCM, container `SDV1`) | Implemented and tested |
+| D2 | Single-owner AEAD encryption (AES-256-GCM, writing `SDV3` and reading legacy `SDV1`) | Implemented and tested |
 | D3 | Hybrid multi-recipient sharing (RSA-OAEP key wrapping, container `SDV2`) | Implemented and tested |
 | D5 | Digital signatures and sender authentication (Ed25519) | Implemented and tested |
 | D6 | Key management: password-protected keystore (scrypt + AES-256-GCM), backup and restore | Implemented and tested |
@@ -29,7 +29,7 @@ Earlier versions are kept in [docs/architecture_diagram.png](docs/architecture_d
 | Path | Responsibility |
 | --- | --- |
 | `vault/crypto_core.py` | Key and nonce generation, canonical metadata, AES-256-GCM encrypt / decrypt |
-| `vault/container.py` | `SDV1` single-owner container: pack, unpack, structural validation |
+| `vault/container.py` | Single-owner `SDV3` and legacy `SDV1` container structure and validation |
 | `vault/file_vault.py` | File-level API for D2, atomic writes |
 | `vault/keys.py` | RSA-3072 and Ed25519 key pairs, public PEM files, key IDs |
 | `vault/keystore.py` | Password-protected keystore (scrypt + AES-256-GCM), backup and restore |
@@ -39,7 +39,7 @@ Earlier versions are kept in [docs/architecture_diagram.png](docs/architecture_d
 | `vault/hybrid.py` | Encrypt once for many recipients and sign, verify and decrypt as one of them |
 | `vault/cli.py` | Command-line interface |
 | `vault/exceptions.py` | `VaultError`, `IntegrityError`, `ContainerFormatError`, `KeyManagementError` |
-| `tests/` | 83 unit tests |
+| `tests/` | 91 tests |
 | `docs/` | Design documents and architecture diagrams |
 
 ## Requirements
@@ -57,16 +57,16 @@ pip install -r requirements.txt
 
 ## D2: Secure Symmetric Encryption Module
 
-The `vault/` package encrypts a file for a single owner with **AES-256-GCM**, a fresh 256-bit key per file and a random 96-bit nonce per encryption. Metadata (algorithm, version, parameters, original name, timestamp) travels in the container header, which is authenticated as AAD. Any change to the ciphertext, nonce, tag or metadata is detected and nothing is written.
+The `vault/` package encrypts a file for a single owner with **AES-256-GCM**, a fresh 256-bit key per file and a random 96-bit nonce per encryption. New `SDV3` packages encrypt the metadata, including the original file name and timestamp, together with the file bytes. The format identifier is authenticated as AAD. Decryption authenticates the package before reading the metadata or writing output. It also reads existing `SDV1` packages.
 
 Full design and security decisions: [`docs/D2-encryption-design.md`](docs/D2-encryption-design.md)
 
 ```bash
-python -m vault encrypt contract.pdf                  # -> contract.pdf.sdv + contract.pdf.sdv.key
-python -m vault decrypt contract.pdf.sdv -k contract.pdf.sdv.key -o restored.pdf
+python -m vault encrypt contract.pdf -o package.sdv    # -> package.sdv + package.sdv.key
+python -m vault decrypt package.sdv -k package.sdv.key -o restored.pdf
 ```
 
-Decryption never overwrites an existing file; add `--force` to allow it.
+When `decrypt` omits `-o`, it restores the authenticated original name in the package's folder. Add `--force` to allow replacing an existing file.
 
 ## D3: Hybrid Encryption (multi-recipient sharing)
 
@@ -137,7 +137,7 @@ python -m pytest -v
 | --- | --- | --- |
 | `tests/test_aead.py` | 16 | AES-GCM round trip, wrong key, modified ciphertext / tag / nonce / metadata, nonce reuse leak |
 | `tests/test_container.py` | 8 | `SDV1` structure and validation |
-| `tests/test_file_vault.py` | 12 | File-level encryption, tampering, safe failure, no overwrite |
+| `tests/test_file_vault.py` | 20 | File-level encryption, private metadata, SDV1 compatibility, tampering and safe failure |
 | `tests/test_metadata.py` | 7 | Required fields, base name only, canonical form, strict parsing |
 | `tests/test_randomness.py` | 4 | 256-bit keys, 96-bit nonces, fresh keys, unique nonces |
 | `tests/test_cli.py` | 5 | D2 command-line flow, tampered input, key file permissions, no overwrite |
@@ -152,5 +152,5 @@ The mapping from each requirement to its tests is in the design documents.
 - **Freshness (SR-05)**: a captured package can be replayed. `created_at` and `file_id` are signed, but nothing tracks them yet.
 - **Authentic public keys (SR-10)**: public keys are `.pub.pem` files the users trust; there is no certificate validation yet.
 - **Key lifecycle (D6)**: rotation and compromise response are manual procedures, and a forgotten password cannot be recovered.
-- **`SDV1` file name**: the single-owner format keeps the original file name in the clear (authenticated, but visible). `SDV2` no longer stores it.
+- **Legacy and external file names**: existing `SDV1` packages contain their original name in the header. The default external name `<input>.sdv` also reveals the source name, even when the package contents are `SDV3`. Use a neutral path with `encrypt -o` when sharing or storing the package. The package size remains visible, and older readers need updating to read `SDV3`.
 

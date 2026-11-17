@@ -1,6 +1,6 @@
 # D2: Secure Symmetric Encryption Module
 
-This module is the cryptographic core of the Secure Digital Document Vault. At this stage it protects files for a **single owner**: there is no sharing, no public-key wrapping and no signatures yet. Those come in later deliverables and will build on top of this module without changing its container format.
+This module protects files for a **single owner**. D3 and D5 use the same cryptographic core for the separate `SDV2` sharing format with public-key wrapping and signatures.
 
 Security goal: *an attacker who obtains the encrypted file must not be able to read or modify its contents without detection.*
 
@@ -33,7 +33,7 @@ Security goal: *an attacker who obtains the encrypted file must not be able to r
 
 `encrypt()` also refuses to run without AAD (`None` or empty bytes), so the metadata can never be left unbound by mistake. This was added after code review in PR #1.
 
-### Metadata authentication strategy
+### Metadata confidentiality and authentication
 
 Metadata is a JSON object:
 
@@ -41,29 +41,28 @@ Metadata is a JSON object:
 {"algorithm":"AES-256-GCM","key_bits":256,"nonce_bytes":12,"original_name":"contract.pdf","tag_bytes":16,"timestamp":1760650000,"version":"1.0"}
 ```
 
-It is serialized canonically (`sort_keys=True`, no spaces, ASCII) so the same dictionary always produces the same bytes. The **entire container header** (magic `SDV1` + metadata length + metadata bytes) is passed to GCM as AAD. The metadata travels in clear (it must be readable before decryption) but any change to it, including the magic or the length field, makes the tag check fail.
+It is serialized canonically (`sort_keys=True`, no spaces, ASCII). New single-owner packages use `SDV3` and encrypt the metadata length, the JSON and the original file bytes as one AES-GCM message. The `SDV3` identifier serves as AAD. The metadata's `version` field describes its JSON schema and stays at `1.0`.
 
-On decryption, the AAD is taken from the **raw bytes stored in the container**, not rebuilt from a parsed dictionary. Re-serializing could normalize away a modification and hide it. The JSON is parsed only after the tag has been verified, so untrusted metadata is never interpreted.
+Existing `SDV1` packages store that JSON in the clear. Their raw header, including the length and metadata bytes, is the AAD. Both formats parse the metadata JSON after the tag has been verified.
 
 ### Container format (`.sdv`)
 
 ```
-+-------------+----------------+-----------------+------------+---------------------------+
-| magic (4 B) | meta_len (4 B) | metadata (JSON) | nonce (12) | ciphertext || tag (16 B)  |
-|   "SDV1"    |  uint32 BE     |  meta_len bytes |            |                           |
-+-------------+----------------+-----------------+------------+---------------------------+
-|<---------------- header = AAD ---------------->|
+SDV3 (new)      magic "SDV3" (4 B, AAD) | nonce (12 B) | ciphertext | tag (16 B)
+                encrypted plaintext: uint32 BE metadata length | metadata JSON | file bytes
+
+SDV1 (legacy)   magic "SDV1" (4 B) | uint32 BE metadata length | metadata JSON |
+                nonce (12 B) | ciphertext | tag (16 B)
+                AAD: the raw header through the metadata JSON
 ```
 
-This maps to the structure suggested in the assignment: `header` (magic + length + metadata), `nonce`, `ciphertext` and `authentication_tag` (the last 16 bytes, appended by GCM).
-
-Parsing rejects, before any cryptography runs: wrong magic, containers too short to hold a nonce and tag, declared metadata lengths above 64 KiB, and truncated data.
+The parser checks the public structure before calling AES-GCM. Metadata length is limited to 64 KiB and must fit in the corresponding buffer. For `SDV3` this check runs after authentication, because its length field is inside the encrypted payload.
 
 ### Decryption order and safe failure
 
 1. Parse the structure (offsets only; nothing is trusted yet).
 2. Verify the tag and decrypt with the stored header as AAD.
-3. Only if step 2 succeeds, parse and validate the metadata.
+3. After authentication, split the `SDV3` payload or read the authenticated `SDV1` metadata bytes. Parse the JSON and validate the original file name.
 4. Write the output through a temporary file and an atomic rename.
 
 Any failure raises an exception and **no output file is created**, not even a partial one. Decryption also refuses to replace an existing file (for example, the original document sitting next to its `.sdv`) unless the caller passes `overwrite=True` (`--force` in the CLI). Authentication errors carry a generic message ("authentication failed") that does not reveal whether the key, nonce, ciphertext or metadata was the problem. The original file name from the metadata is reduced to its base name before use, so a stored name cannot point outside the output folder.
@@ -89,14 +88,15 @@ The same attacker defined in D1 for the untrusted zone: someone who can **read, 
 
 | Attacker action | Result |
 | --- | --- |
-| Reads the `.sdv` file | Learns only the clear metadata (name, timestamp, parameters) and the file size; content stays confidential |
+| Reads an `SDV3` package | Sees the format identifier, nonce and package size. Metadata and content stay confidential |
+| Reads a legacy `SDV1` package | Sees the clear metadata and package size. Content stays confidential |
 | Flips bits in the ciphertext or tag | `IntegrityError`, nothing written |
 | Edits the metadata (name, timestamp, algorithm) | `IntegrityError`, nothing written |
 | Changes the nonce | `IntegrityError`, nothing written |
-| Truncates or corrupts the structure | `ContainerFormatError`, nothing written |
+| Truncates or corrupts the structure | `ContainerFormatError` for an invalid structure, or `IntegrityError` if only authentication detects the change. Nothing written |
 | Tries a different key | `IntegrityError`, nothing written |
 
-Out of scope at this stage: a compromised endpoint (malware on the owner's machine), theft of the `.key` file, deletion of the container (availability), replay of an old but valid container, and hiding the original file name. The name travels in clear but authenticated, which the assignment allows ("filename (optional)"), but it conflicts with requirement SR-07 from D1. The team decided in PR #2 to keep it for D2 and track moving it into the encrypted payload as a GitHub issue. Key protection and sender authenticity are addressed in the next deliverables.
+The default external file name `<input>.sdv` still exposes the original name outside the package. Use a neutral path with `encrypt -o` when the external name matters. Existing `SDV1` packages keep their original visibility and can be decrypted and encrypted again as `SDV3`. This format does not address a compromised endpoint, theft of the `.key` file, deletion or replay.
 
 ## 4. Tests
 
@@ -107,10 +107,11 @@ Run with `python -m pytest -v`.
 | Encrypt → decrypt returns identical file | `test_encrypt_decrypt_identical_file`, `test_roundtrip`, `test_cli_roundtrip` |
 | Wrong key fails | `test_wrong_key_fails` (AEAD and file level) |
 | Modified ciphertext fails | `test_modified_ciphertext_fails`, `test_modified_tag_fails`, `test_truncated_ciphertext_fails` |
-| Modified metadata fails | `test_modified_metadata_fails`, `test_modified_timestamp_fails`, `test_modified_magic_fails` |
+| Private metadata and compatible legacy restoration | `test_private_container_hides_and_restores_original_name`, `test_legacy_container_restores_original_name` |
+| Modified metadata fails | `test_modified_private_metadata_ciphertext_fails`, `test_modified_metadata_fails`, `test_modified_timestamp_fails` |
 | Multiple encryptions produce different ciphertexts | `test_two_encryptions_differ`, `test_same_input_gives_different_ciphertexts` |
 | Nonce uniqueness / secure randomness | `test_nonces_are_unique`, `test_keys_are_fresh` |
-| Safe failure | `test_failed_decryption_writes_nothing`, `test_cli_tampered_container_returns_error`, `test_decrypt_does_not_overwrite_existing_file` |
+| Safe failure | `test_malformed_private_metadata_writes_nothing`, `test_failed_decryption_writes_nothing`, `test_cli_tampered_container_returns_error`, `test_decrypt_does_not_overwrite_existing_file` |
 | Metadata always bound | `test_encrypt_requires_aad` |
 
 ## References

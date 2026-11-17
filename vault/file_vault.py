@@ -8,7 +8,7 @@ import os
 import tempfile
 
 from vault import container, crypto_core
-from vault.exceptions import VaultError
+from vault.exceptions import ContainerFormatError, VaultError
 
 
 def _atomic_write(path: str, data: bytes) -> None:
@@ -44,10 +44,9 @@ def encrypt_file(input_path: str, output_path: str | None = None) -> tuple[str, 
     key = crypto_core.generate_key()
     metadata = crypto_core.build_metadata(input_path)
     metadata_bytes = crypto_core.canonicalize_metadata(metadata)
-    aad = container.build_header(metadata_bytes)
-
-    nonce, ciphertext_with_tag = crypto_core.encrypt(key, plaintext, aad)
-    _atomic_write(output_path, container.pack(metadata_bytes, nonce, ciphertext_with_tag))
+    payload = container.pack_private_payload(metadata_bytes, plaintext)
+    nonce, ciphertext_with_tag = crypto_core.encrypt(key, payload, container.PRIVATE_MAGIC)
+    _atomic_write(output_path, container.pack_private(nonce, ciphertext_with_tag))
     return output_path, key
 
 
@@ -59,7 +58,13 @@ def decrypt_bytes(data: bytes, key: bytes) -> tuple[dict, bytes]:
     """
     parts = container.unpack(data)
     plaintext = crypto_core.decrypt(key, parts.nonce, parts.ciphertext_with_tag, parts.header)
-    metadata = crypto_core.parse_metadata(parts.metadata_bytes)
+    metadata_bytes = parts.metadata_bytes
+    if metadata_bytes is None:
+        metadata_bytes, plaintext = container.unpack_private_payload(plaintext)
+    metadata = crypto_core.parse_metadata(metadata_bytes)
+    name = metadata["original_name"]
+    if not isinstance(name, str) or "\0" in name:
+        raise ContainerFormatError("Invalid original file name")
     return metadata, plaintext
 
 

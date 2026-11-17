@@ -46,7 +46,7 @@ REQUIRED_METADATA_FIELDS = {
 
 
 def build_metadata(original_name: str, timestamp: int | None = None) -> dict:
-    """Build the metadata dictionary that will travel as AAD.
+    """Build the metadata dictionary for the single-owner container.
 
     Only the base name of the file is kept, never the full local path.
     """
@@ -66,8 +66,8 @@ def canonicalize_metadata(metadata: dict) -> bytes:
     """Serialize metadata deterministically.
 
     Same dictionary -> same bytes, regardless of key insertion order.
-    This matters because the AAD must be byte-for-byte identical at
-    encryption and decryption time, or authentication fails.
+    SDV1 authenticates these bytes as AAD. SDV3 includes them in the
+    encrypted payload.
     """
     return json.dumps(
         metadata,
